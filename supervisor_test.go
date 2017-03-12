@@ -25,11 +25,12 @@ func TestOneForOne(t *testing.T) {
 	names := make(chan string, 1000)
 	iters := make(map[string]int)
 
-	ctx := WithOptions(
+	period := time.Millisecond * 300
+	ctx, _ := WithOptions(
 		rootCtx,
 		OneForOne,
 		2,
-		time.Millisecond*300)
+		period)
 
 	c1 := makeTest(0, 1, true, `C1`, names)
 	c2 := makeTest(0, 1, true, `C2`, names)
@@ -41,7 +42,7 @@ L1:
 		case n := <-names:
 			prev, _ := iters[n]
 			iters[n] = prev + 1
-		case <-time.After(time.Second * 2):
+		case <-time.After(period * 2):
 			break L1
 		}
 	}
@@ -54,11 +55,12 @@ func TestOneForAll(t *testing.T) {
 	names := make(chan string, 1000)
 	iters := make(map[string]int)
 
-	ctx := WithOptions(
+	period := time.Millisecond * 300
+	ctx, _ := WithOptions(
 		rootCtx,
 		OneForAll,
 		2,
-		time.Millisecond*300)
+		period)
 
 	c1 := makeTest(0, 2, true, `C1`, names)
 	c2 := makeTest(0, 1, true, `C2`, names)
@@ -70,11 +72,52 @@ L1:
 		case n := <-names:
 			prev, _ := iters[n]
 			iters[n] = prev + 1
-		case <-time.After(time.Second * 2):
+		case <-time.After(period * 2):
 			break L1
 		}
 	}
 	if iters[`C1`] != 4 || iters[`C2`] != 3 {
+		t.Fail()
+	}
+}
+
+func TestSimpleOneForOne(t *testing.T) {
+	names := make(chan string, 1000)
+	iters := make(map[string]int)
+
+	period := time.Millisecond * 300
+	ctx, sofo := WithOptions(
+		rootCtx,
+		SimpleOneForOne,
+		2,
+		period)
+
+	c1 := makeTest(0, 1, true, `C1`, names)
+	c2 := makeTest(0, 1, true, `C2`, names)
+	go Supervise(ctx, c1, c2)
+
+	queueingStarted := make(chan struct{})
+	go func() {
+		close(queueingStarted)
+
+		sofo <- c1
+		sofo <- c2
+	}()
+	<-queueingStarted
+
+L1:
+	for {
+		select {
+		case n := <-names:
+			prev, _ := iters[n]
+			iters[n] = prev + 1
+		case <-time.After(period * 2):
+			close(sofo)
+			break L1
+		}
+	}
+	if iters[`C1`] != 4 || iters[`C2`] != 4 {
+		t.Log(iters)
 		t.Fail()
 	}
 }

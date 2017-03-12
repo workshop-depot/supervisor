@@ -5,6 +5,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,110 @@ func Supervise(ctx context.Context, children ...Tree) {
 		superviseOneForOne(ctx, op, children...)
 	case OneForAll:
 		superviseOneForAll(ctx, op, children...)
+	case SimpleOneForOne:
+		superviseSimpleOneForOne(ctx, op, children...)
 	}
+}
+
+func superviseSimpleOneForOne(ctxSrc context.Context, op options, children ...Tree) {
+	var idSeq int64
+	repo := make(map[int64]*child)
+	stoppedID := make(chan int64)
+
+	wg := &sync.WaitGroup{}
+	defer wg.Wait()
+
+	ctx, cancel := context.WithCancel(ctxSrc)
+	defer cancel()
+
+	register := func(newChild Tree) (*child, int64) {
+		id := atomic.AddInt64(&idSeq, 1)
+		c := &child{
+			child:     newChild,
+			intensity: op.intensity,
+		}
+		repo[id] = c
+		return c, id
+	}
+
+	for _, cv := range children {
+		cv := cv
+		v, id := register(cv)
+		startSimpleOneForOne(ctx, op, wg, stoppedID, v, id)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case id := <-stoppedID:
+			cld, ok := repo[id]
+			if !ok {
+				continue
+			}
+			if cld == nil {
+				delete(repo, id)
+				continue
+			}
+			startSimpleOneForOne(ctx, op, wg, stoppedID, cld, id)
+			cld.intensity--
+			if cld.intensity <= 0 {
+				delete(repo, id)
+			}
+		case newChild, ok := <-op.sofo:
+			if !ok {
+				return
+			}
+			if newChild == nil {
+				continue
+			}
+			v, id := register(newChild)
+			startSimpleOneForOne(ctx, op, wg, stoppedID, v, id)
+		}
+	}
+}
+
+func startSimpleOneForOne(
+	ctx context.Context,
+	op options,
+	wg *sync.WaitGroup,
+	stoppedIndex chan int64,
+	cld *child,
+	index int64) {
+	if cld.intensity <= 0 {
+		return
+	}
+	intensity := cld.intensity
+	f := cld.child
+
+	started := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(started)
+		defer func() {
+			if e := recover(); e != nil {
+				// TODO:
+			}
+			stoppedIndex <- index
+		}()
+		if intensity < op.intensity {
+			<-time.After(op.period)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		f(ctx)
+	}()
+	<-started
 }
 
 func superviseOneForAll(ctxSrc context.Context, op options, children ...Tree) {
@@ -242,17 +346,22 @@ func WithOptions(
 	ctx context.Context,
 	strategy Strategy,
 	intensity int,
-	period time.Duration) context.Context {
+	period time.Duration) (context.Context, chan<- Tree) {
 	op := options{
 		strategy:  strategy,
 		intensity: intensity,
 		period:    period,
 	}
+	var sofoChildren chan Tree
+	if strategy == SimpleOneForOne {
+		sofoChildren = make(chan Tree)
+		op.sofo = sofoChildren
+	}
 	nextCtx := &optionContext{
 		Context: ctx,
 		options: op,
 	}
-	return nextCtx
+	return nextCtx, sofoChildren
 }
 
 type optionContext struct {
@@ -264,6 +373,7 @@ type options struct {
 	strategy  Strategy
 	intensity int
 	period    time.Duration
+	sofo      <-chan Tree
 }
 
 // Strategy indicates the restart strategy
@@ -273,9 +383,16 @@ type Strategy int
 const (
 	OneForOne Strategy = iota + 1
 	OneForAll
+	SimpleOneForOne
 )
 
 // one_for_one
 // one_for_all
 // rest_for_one == go pipeline (in some cases)
 // simple_one_for_one
+
+// debug
+// sofo		chan
+// error	chan
+
+// Tree should return error?
