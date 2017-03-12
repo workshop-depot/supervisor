@@ -39,7 +39,7 @@ func childGoroutine(ctx context.Context, _ ...Tree) {
 For using a supervisor with specific settings, a context (`context.Context`) should be created using `WithOptions`:
 
 ```go
-ctx := WithOptions(
+ctx, _ := WithOptions(
 	rootCtx,
 	OneForOne,
 	2,
@@ -47,3 +47,5 @@ ctx := WithOptions(
 ```
 
 In which we set the parent context, strategy for restarting the goroutine, intensity for restarting the goroutine (max number of restarts) and the period of restarts. If number of restarts of a goroutine reaches it's intensity, it will no longer gets restarted. When all children of a supervisor are done, the supervisor will stop.
+
+In case of `SimpleOneForOne` strategy, supervisor won't stop even if it has no children, unless either the parent context gets cancels or the channel returned from `WithChannel` gets closed.

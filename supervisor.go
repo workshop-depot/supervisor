@@ -391,8 +391,7 @@ const (
 // rest_for_one == go pipeline (in some cases)
 // simple_one_for_one
 
-// debug
-// sofo		chan
-// error	chan
+// debug				(?)
+// error handling chan	(?)
 
 // Tree should return error?

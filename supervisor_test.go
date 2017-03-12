@@ -122,6 +122,47 @@ L1:
 	}
 }
 
+func TestSimpleOneForOne2(t *testing.T) {
+	names := make(chan string, 1000)
+	iters := make(map[string]int)
+
+	period := time.Millisecond * 300
+	ctx, sofo := WithOptions(
+		rootCtx,
+		SimpleOneForOne,
+		2,
+		period)
+
+	go Supervise(ctx)
+
+	queueingStarted := make(chan struct{})
+	go func() {
+		close(queueingStarted)
+
+		c1 := makeTest(0, 1, true, `C1`, names)
+		c2 := makeTest(0, 1, true, `C2`, names)
+		sofo <- c1
+		sofo <- c2
+	}()
+	<-queueingStarted
+
+L1:
+	for {
+		select {
+		case n := <-names:
+			prev, _ := iters[n]
+			iters[n] = prev + 1
+		case <-time.After(period * 2):
+			close(sofo)
+			break L1
+		}
+	}
+	if iters[`C1`] != 2 || iters[`C2`] != 2 {
+		t.Log(iters)
+		t.Fail()
+	}
+}
+
 func makeTest(
 	timeout time.Duration,
 	countout int,
