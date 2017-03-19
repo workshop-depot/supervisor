@@ -103,11 +103,9 @@ func startSimpleOneForOne(
 	intensity := cld.intensity
 	f := cld.child
 
-	started := make(chan struct{})
 	wg.Add(1)
-	go func() {
+	waitStart(func() {
 		defer wg.Done()
-		close(started)
 		defer func() {
 			if e := recover(); e != nil {
 				// TODO:
@@ -123,8 +121,7 @@ func startSimpleOneForOne(
 		default:
 		}
 		f(ctx)
-	}()
-	<-started
+	})
 }
 
 func superviseOneForAll(ctxSrc context.Context, op options, children ...Tree) {
@@ -204,11 +201,8 @@ func startOneForAll(
 	intensity := cld.intensity
 	f := cld.child
 
-	started := make(chan struct{})
 	wg.Add(1)
-	go func() {
-		close(started)
-
+	waitStart(func() {
 		defer wg.Done()
 		defer cancel()
 		defer func() {
@@ -225,8 +219,7 @@ func startOneForAll(
 		default:
 		}
 		f(ctx)
-	}()
-	<-started
+	})
 }
 
 func superviseOneForOne(ctxSrc context.Context, op options, children ...Tree) {
@@ -285,11 +278,9 @@ func startOneForOne(
 	intensity := cld.intensity
 	f := cld.child
 
-	started := make(chan struct{})
 	wg.Add(1)
-	go func() {
+	waitStart(func() {
 		defer wg.Done()
-		close(started)
 		defer func() {
 			if e := recover(); e != nil {
 				// TODO:
@@ -305,6 +296,14 @@ func startOneForOne(
 		default:
 		}
 		f(ctx)
+	})
+}
+
+func waitStart(f func()) {
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		f()
 	}()
 	<-started
 }
