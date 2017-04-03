@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dc0d/goroutines"
 )
 
 // Tree is the recursive type helps with creating trees of supervisors
@@ -25,6 +27,86 @@ func Supervise(ctx context.Context, children ...Tree) {
 		superviseSimpleOneForOne(ctx, op, children...)
 	}
 }
+
+//-----------------------------------------------------------------------------
+
+func superviseOneForOne(ctxSrc context.Context, op options, children ...Tree) {
+	list := makeSet(op, children...)
+	stoppedIndex := make(chan int, len(children))
+
+	wg := &sync.WaitGroup{}
+	defer wg.Wait()
+
+	ctx, cancel := context.WithCancel(ctxSrc)
+	defer cancel()
+
+	for k, v := range list {
+		k, v := k, v
+		startOneForOne(ctx, op, wg, stoppedIndex, v, k)
+	}
+
+	for {
+		if len(list) == 0 {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case i := <-stoppedIndex:
+			cld := list[i]
+			startOneForOne(ctx, op, wg, stoppedIndex, cld, i)
+			if cld.intensity < 0 {
+				continue
+			}
+			cld.intensity--
+			if cld.intensity == 0 {
+				delete(list, i)
+			}
+		}
+	}
+}
+
+func startOneForOne(
+	ctx context.Context,
+	op options,
+	wg *sync.WaitGroup,
+	stoppedIndex chan int,
+	cld *child,
+	index int) {
+	if cld.intensity == 0 {
+		return
+	}
+	intensity := cld.intensity
+	f := cld.child
+
+	goroutines.New().
+		WaitStart().
+		WaitGroup(wg).
+		Recover(func(e interface{}) {
+			// TODO: e
+			stoppedIndex <- index
+		}).
+		Before(func() {
+			if intensity < op.intensity {
+				<-time.After(op.period)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}).
+		Go(func() { f(ctx) })
+}
+
+//-----------------------------------------------------------------------------
 
 func superviseSimpleOneForOne(ctxSrc context.Context, op options, children ...Tree) {
 	var idSeq int64
@@ -73,6 +155,9 @@ func superviseSimpleOneForOne(ctxSrc context.Context, op options, children ...Tr
 				continue
 			}
 			startSimpleOneForOne(ctx, op, wg, stoppedID, cld, id)
+			if cld.intensity < 0 {
+				continue
+			}
 			cld.intensity--
 			if cld.intensity <= 0 {
 				delete(repo, id)
@@ -103,26 +188,27 @@ func startSimpleOneForOne(
 	intensity := cld.intensity
 	f := cld.child
 
-	wg.Add(1)
-	waitStart(func() {
-		defer wg.Done()
-		defer func() {
-			if e := recover(); e != nil {
-				// TODO:
-			}
+	goroutines.New().
+		WaitStart().
+		WaitGroup(wg).
+		Recover(func(e interface{}) {
+			// TODO: e
 			stoppedIndex <- index
-		}()
-		if intensity < op.intensity {
-			<-time.After(op.period)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		f(ctx)
-	})
+		}).
+		Before(func() {
+			if intensity < op.intensity {
+				<-time.After(op.period)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}).
+		Go(func() { f(ctx) })
 }
+
+//-----------------------------------------------------------------------------
 
 func superviseOneForAll(ctxSrc context.Context, op options, children ...Tree) {
 	list := makeList(op, children...)
@@ -201,111 +287,38 @@ func startOneForAll(
 	intensity := cld.intensity
 	f := cld.child
 
-	wg.Add(1)
-	waitStart(func() {
-		defer wg.Done()
-		defer cancel()
-		defer func() {
-			if e := recover(); e != nil {
-				// TODO:
+	goroutines.New().
+		WaitStart().
+		WaitGroup(wg).
+		Recover(func(e interface{}) {
+			// TODO: e
+		}).
+		After(cancel, true).
+		Before(func() {
+			if intensity < op.intensity {
+				<-time.After(op.period)
 			}
-		}()
-		if intensity < op.intensity {
-			<-time.After(op.period)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		f(ctx)
-	})
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}).
+		Go(func() { f(ctx) })
 }
 
-func superviseOneForOne(ctxSrc context.Context, op options, children ...Tree) {
-	list := makeList(op, children...)
-	stoppedIndex := make(chan int, len(children))
+//-----------------------------------------------------------------------------
 
-	wg := &sync.WaitGroup{}
-	defer wg.Wait()
-
-	ctx, cancel := context.WithCancel(ctxSrc)
-	defer cancel()
-
-	for k, v := range list {
-		k, v := k, v
-		startOneForOne(ctx, op, wg, stoppedIndex, v, k)
+func makeSet(op options, children ...Tree) map[int]*child {
+	list := make(map[int]*child)
+	for k, v := range children {
+		c := child{
+			child:     v,
+			intensity: op.intensity,
+		}
+		list[k] = &c
 	}
-
-	for {
-		if any := sort.Search(len(list), func(ix int) bool { return list[ix] != nil }); len(list) <= any {
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case i := <-stoppedIndex:
-			cld := list[i]
-			if cld == nil {
-				continue
-			}
-			startOneForOne(ctx, op, wg, stoppedIndex, cld, i)
-			cld.intensity--
-			if cld.intensity <= 0 {
-				list[i] = nil
-			}
-		}
-	}
-}
-
-func startOneForOne(
-	ctx context.Context,
-	op options,
-	wg *sync.WaitGroup,
-	stoppedIndex chan int,
-	cld *child,
-	index int) {
-	if cld.intensity <= 0 {
-		return
-	}
-	intensity := cld.intensity
-	f := cld.child
-
-	wg.Add(1)
-	waitStart(func() {
-		defer wg.Done()
-		defer func() {
-			if e := recover(); e != nil {
-				// TODO:
-			}
-			stoppedIndex <- index
-		}()
-		if intensity < op.intensity {
-			<-time.After(op.period)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		f(ctx)
-	})
-}
-
-func waitStart(f func()) {
-	started := make(chan struct{})
-	go func() {
-		close(started)
-		f()
-	}()
-	<-started
+	return list
 }
 
 func makeList(op options, children ...Tree) []*child {
@@ -328,7 +341,7 @@ type child struct {
 func getOptions(ctx context.Context) options {
 	op := options{
 		strategy:  OneForOne,
-		intensity: 1,
+		intensity: -1,
 		period:    time.Second * 5,
 	}
 	switch x := ctx.(type) {
@@ -340,7 +353,7 @@ func getOptions(ctx context.Context) options {
 }
 
 // WithOptions from a given context, creates a context with given options to
-// be passed to Supervise function
+// get passed to Supervise function
 func WithOptions(
 	ctx context.Context,
 	strategy Strategy,
