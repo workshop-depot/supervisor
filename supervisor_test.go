@@ -51,6 +51,39 @@ L1:
 	}
 }
 
+func TestOneForOne1(t *testing.T) {
+	names := make(chan string, 1000)
+	iters := make(map[string]int)
+
+	period := time.Millisecond * 50
+	ctx, _ := WithOptions(
+		rootCtx,
+		OneForOne,
+		2,
+		period)
+
+	c1 := makeTest(0, 10, true, `C1`, names)
+	c2 := makeTest(0, 10, true, `C2`, names)
+	go Supervise(ctx, c1, c2)
+
+	<-time.After(time.Millisecond * 800)
+
+L1:
+	for {
+		select {
+		case n := <-names:
+			prev, _ := iters[n]
+			iters[n] = prev + 1
+		case <-time.After(period * 2):
+			break L1
+		}
+	}
+	if iters[`C1`] != 9 || iters[`C2`] != 9 {
+		t.Errorf("%+v", iters)
+		t.Fail()
+	}
+}
+
 func TestOneForAll(t *testing.T) {
 	names := make(chan string, 1000)
 	iters := make(map[string]int)
