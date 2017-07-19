@@ -67,15 +67,14 @@ func (sp *Supervisor) sup(
 	if retry == nil {
 		retry = sp.defaultRetry
 	}
-	internalRetry := func(e interface{}) {
-		retry(e, intensity, fn, dt)
+	internalRetry := func(e1 interface{}) {
+		retry(e1, intensity, fn, dt)
 	}
 	utl := goroutines.New()
 	if sp.ensureStarted {
 		utl = utl.EnsureStarted()
 	}
-	utl.
-		AddToGroup(sp.exectx.WG).
+	utl.AddToGroup(sp.exectx.WG).
 		Recover(func(e interface{}) {
 			internalRetry(e)
 		}).
@@ -92,48 +91,51 @@ func (sp *Supervisor) Simple141(
 	intensity int,
 	period time.Duration,
 	fn func() error) {
-	retry := func(e interface{}, intensity int, fn func() error, dt time.Duration) {
+	retry := func(e1 interface{}, intensity1 int, fn1 func() error, dt1 time.Duration) {
 		// log.Println("error:", e)
-		time.Sleep(dt)
-		go sp.Simple141(intensity, dt, fn)
+		time.Sleep(dt1)
+		go sp.Simple141(intensity1, dt1, fn1)
 	}
 	sp.sup(intensity, period, fn, retry)
 }
 
-func (sp *Supervisor) one4All(fn ...func(context.Context) error) error {
-	if len(fn) == 0 {
+func (sp *Supervisor) one4All(fn ...func(context.Context) error) (ferr error) {
+	all := len(fn)
+	if all == 0 {
 		return nil
 	}
 
 	subCtx, subCancel := context.WithCancel(sp.exectx.Ctx)
 	defer subCancel()
-	subWG := &sync.WaitGroup{}
-	subSup := NewSupervisor(NewExeCtx(subCtx, subWG), true)
 
-	seterr := make(chan error, len(fn))
+	seterr := make(chan error, all)
 	for _, v := range fn {
 		v := v
-		subSup.Simple141(1, time.Millisecond, func() (cerr error) {
+		sp.Simple141(1, time.Millisecond, func() (cerr error) {
 			defer func() {
+				seterr <- cerr
 				if cerr != nil {
-					seterr <- cerr
 					subCancel()
 				}
 			}()
 			cerr = v(subCtx)
-			return cerr
+			return
 		})
 	}
 
-	subWG.Wait()
-
-	select {
-	case ferr := <-seterr:
-		return ferr
-	default:
+	cnt := 0
+	for {
+		_err := <-seterr
+		if _err != nil {
+			ferr = _err
+		}
+		cnt++
+		if cnt == len(fn) {
+			break
+		}
 	}
 
-	return nil
+	return
 }
 
 // One4All if one of goroutines stops, all other will get the signal to stop too.
@@ -143,5 +145,57 @@ func (sp *Supervisor) One4All(
 	fn ...func(context.Context) error) {
 	sp.Simple141(intensity, period, func() error {
 		return sp.one4All(fn...)
+	})
+}
+
+func (sp *Supervisor) rest4One(fn ...func(context.Context) error) (ferr error) {
+	all := len(fn)
+	if all == 0 {
+		return nil
+	}
+
+	rootCtx, rootCancel := context.WithCancel(sp.exectx.Ctx)
+	defer rootCancel()
+
+	seterr := make(chan error, all)
+	var _subCtx = rootCtx
+	for _, v := range fn {
+		subCtx, subCancel := context.WithCancel(_subCtx)
+		v := v
+		sp.Simple141(1, time.Millisecond, func() (cerr error) {
+			defer func() {
+				seterr <- cerr
+				if cerr != nil {
+					subCancel()
+				}
+			}()
+			cerr = v(subCtx)
+			return
+		})
+		_subCtx = subCtx
+	}
+
+	cnt := 0
+	for {
+		_err := <-seterr
+		if _err != nil {
+			ferr = _err
+		}
+		cnt++
+		if cnt == len(fn) {
+			break
+		}
+	}
+
+	return
+}
+
+// Rest4One rest for one
+func (sp *Supervisor) Rest4One(
+	intensity int,
+	period time.Duration,
+	fn ...func(context.Context) error) {
+	sp.Simple141(intensity, period, func() error {
+		return sp.rest4One(fn...)
 	})
 }

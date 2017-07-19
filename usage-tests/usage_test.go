@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,8 +109,8 @@ func TestOne4AllWithError(t *testing.T) {
 
 	var cnt int64
 	f := func(ctx context.Context) error {
-		atomic.AddInt64(&cnt, 1)
-		cc := atomic.LoadInt64(&cnt)
+		cc := atomic.AddInt64(&cnt, 1)
+		runtime.Gosched()
 		if 4 == cc || 8 == cc {
 			return errors.New("SHOULD NOT 4")
 		}
@@ -120,5 +121,41 @@ func TestOne4AllWithError(t *testing.T) {
 	<-time.After(time.Millisecond * 200)
 
 	wg.Wait()
-	assert.Equal(t, int64(14), atomic.LoadInt64(&cnt))
+	assert.Equal(t, int64(18), atomic.LoadInt64(&cnt))
+}
+
+func TestOne4Rest(t *testing.T) {
+	wg := new(sync.WaitGroup)
+	sup := supervisor.NewSupervisor(supervisor.NewExeCtx(rootCtx, wg), true)
+
+	delay := make(chan int, 100)
+	lastDelay := 10
+	go func() {
+		for {
+			lastDelay += 10
+			delay <- lastDelay
+		}
+	}()
+
+	var cnt int64
+	f := func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Duration(<-delay) * time.Millisecond):
+		}
+		cc := atomic.LoadInt64(&cnt)
+		if cc == 3 || cc == 6 || cc == 18 {
+			atomic.CompareAndSwapInt64(&cnt, cc, cc+1)
+			return errors.New("SHOULD NOT 4")
+		}
+		atomic.AddInt64(&cnt, 1)
+		return nil
+	}
+	go sup.Rest4One(6, time.Millisecond*10, f, f, f, f, f, f, f, f, f, f, f, f)
+
+	<-time.After(time.Millisecond * 1200)
+
+	wg.Wait()
+	assert.Equal(t, int64(31), atomic.LoadInt64(&cnt))
 }
