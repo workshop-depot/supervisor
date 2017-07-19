@@ -1,4 +1,4 @@
-// Package supervisor provides supervisor trees, for Go
+// Package supervisor provides supervision utilities, for Go
 package supervisor
 
 import (
@@ -9,86 +9,139 @@ import (
 	"github.com/dc0d/goroutines"
 )
 
-var (
-	_dummy = goroutines.New()
-)
-
-type child struct{ intensity int }
-
-type Supervisor struct {
-	// ptr
-	ctx context.Context
-	wg  *sync.WaitGroup
-
-	// val
-	period time.Duration
-	child
+// ExeCtx provides an execution context, including an context.Context and a *sync.WaitGroup.
+type ExeCtx struct {
+	Ctx context.Context
+	WG  *sync.WaitGroup
 }
 
-func New() *Supervisor {
-	res := &Supervisor{
-		period: time.Second * 5,
+// NewExeCtx creates an instance of ExeCtx
+func NewExeCtx(ctx context.Context, wg *sync.WaitGroup) *ExeCtx {
+	res := &ExeCtx{
+		Ctx: ctx,
+		WG:  wg,
 	}
-	res.intensity = -1
 	return res
 }
 
-func (s *Supervisor) Intensity(intensity int) *Supervisor {
-	s.intensity = intensity
-	return s
+// Supervisor supervises other goroutines
+type Supervisor struct {
+	exectx        *ExeCtx
+	ensureStarted bool
 }
 
-func (s *Supervisor) WaitGroup(wg *sync.WaitGroup) *Supervisor {
-	s.wg = wg
-	return s
+// NewSupervisor creates an instance of Supervisor
+func NewSupervisor(exectx *ExeCtx, ensureStarted bool) *Supervisor {
+	res := new(Supervisor)
+	res.exectx = exectx
+	res.ensureStarted = ensureStarted
+	return res
 }
 
-func (s *Supervisor) Period(period time.Duration) *Supervisor {
-	s.period = period
-	return s
+func (sp *Supervisor) defaultRetry(e interface{}, intensity int, fn func() error, dt time.Duration) {
+	// log.Println("error:", e)
+	time.Sleep(dt)
+	go sp.sup(intensity, dt, fn, sp.defaultRetry)
 }
 
-// Supervise acts as one for one and simple one for one (not much practical
-// usage in having both)
-func (s Supervisor) Supervise(ctx context.Context, children ...Tree) {
-	if s.intensity < -1 {
-		s.intensity = -1
+func (sp *Supervisor) sup(
+	intensity int,
+	period time.Duration,
+	fn func() error,
+	retry func(interface{}, int, func() error, time.Duration)) {
+	select {
+	case <-sp.exectx.Ctx.Done():
+		return
+	default:
 	}
-	if s.period <= 0 {
-		s.period = time.Second * 5
-	}
-	s.ctx = ctx
-	for _, v := range children {
-		v := v
-		news := s
-		news.supervise(v)
-	}
-}
-
-func (s Supervisor) supervise(child Tree) {
-	if s.intensity == 0 {
+	if intensity == 0 {
 		return
 	}
-	if s.intensity > 0 {
-		s.intensity--
+	if intensity > 0 {
+		intensity--
 	}
-	goroutines.New().
-		WaitGroup(s.wg).
-		WaitStart().
+	dt := time.Second
+	if period > 0 {
+		dt = period
+	}
+	if retry == nil {
+		retry = sp.defaultRetry
+	}
+	internalRetry := func(e interface{}) {
+		retry(e, intensity, fn, dt)
+	}
+	utl := goroutines.New()
+	if sp.ensureStarted {
+		utl = utl.EnsureStarted()
+	}
+	utl.
+		AddToGroup(sp.exectx.WG).
 		Recover(func(e interface{}) {
-			time.Sleep(s.period)
-			go s.supervise(child)
+			internalRetry(e)
 		}).
 		Go(func() {
-			child(s.ctx)
+			if err := fn(); err != nil {
+				internalRetry(err)
+			}
 		})
 }
 
-// Tree is the recursive type helps with creating trees of supervisors
-type Tree func(context.Context, ...Tree)
+// Simple141 provides simple one for one supervision. period must be
+// greater than zero to take effect. An intensity of -1 means run forever.
+func (sp *Supervisor) Simple141(
+	intensity int,
+	period time.Duration,
+	fn func() error) {
+	retry := func(e interface{}, intensity int, fn func() error, dt time.Duration) {
+		// log.Println("error:", e)
+		time.Sleep(dt)
+		go sp.Simple141(intensity, dt, fn)
+	}
+	sp.sup(intensity, period, fn, retry)
+}
 
-// this package was a study, not much usage in it's current form. full blown
-// solutions such as proto actor serve difference scenarious far better, and
-// using an interface for actors (calling methods on each message) is more
-// logical, because we can not force the user to respect <-ctx.Done() and that
-// will make a mess of things
+func (sp *Supervisor) one4All(fn ...func(context.Context) error) error {
+	if len(fn) == 0 {
+		return nil
+	}
+
+	subCtx, subCancel := context.WithCancel(sp.exectx.Ctx)
+	defer subCancel()
+	subWG := &sync.WaitGroup{}
+	subSup := NewSupervisor(NewExeCtx(subCtx, subWG), true)
+
+	seterr := make(chan error, len(fn))
+	for _, v := range fn {
+		v := v
+		subSup.Simple141(1, time.Millisecond, func() (cerr error) {
+			defer func() {
+				if cerr != nil {
+					seterr <- cerr
+					subCancel()
+				}
+			}()
+			cerr = v(subCtx)
+			return cerr
+		})
+	}
+
+	subWG.Wait()
+
+	select {
+	case ferr := <-seterr:
+		return ferr
+	default:
+	}
+
+	return nil
+}
+
+// One4All if one of goroutines stops, all other will get the signal to stop too.
+func (sp *Supervisor) One4All(
+	intensity int,
+	period time.Duration,
+	fn ...func(context.Context) error) {
+	sp.Simple141(intensity, period, func() error {
+		return sp.one4All(fn...)
+	})
+}
