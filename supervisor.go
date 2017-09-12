@@ -1,201 +1,105 @@
-// Package supervisor provides supervision utilities, for Go
+// Package supervisor provides supervision utilities
 package supervisor
 
 import (
-	"context"
-	"sync"
 	"time"
 
-	"github.com/dc0d/goroutines"
+	"github.com/dc0d/club/errors"
 )
 
-// ExeCtx provides an execution context, including an context.Context and a *sync.WaitGroup.
-type ExeCtx struct {
-	Ctx context.Context
-	WG  *sync.WaitGroup
+//-----------------------------------------------------------------------------
+
+type supervisorConf struct {
+	intensity int
+	period    time.Duration
+	onError   func(error)
 }
 
-// NewExeCtx creates an instance of ExeCtx
-func NewExeCtx(ctx context.Context, wg *sync.WaitGroup) *ExeCtx {
-	res := &ExeCtx{
-		Ctx: ctx,
-		WG:  wg,
+// Option represents a supervision option
+type Option func(supervisorConf) supervisorConf
+
+// Intensity of -1 means run worker forever.
+func Intensity(intensity int) Option {
+	return func(sc supervisorConf) supervisorConf {
+		sc.intensity = intensity
+		return sc
 	}
-	return res
 }
 
-// Supervisor supervises other goroutines
-type Supervisor struct {
-	exectx        *ExeCtx
-	ensureStarted bool
+// Period of time to sleep between restarts
+func Period(period time.Duration) Option {
+	return func(sc supervisorConf) supervisorConf {
+		sc.period = period
+		return sc
+	}
 }
 
-// NewSupervisor creates an instance of Supervisor
-func NewSupervisor(exectx *ExeCtx, ensureStarted bool) *Supervisor {
-	res := new(Supervisor)
-	res.exectx = exectx
-	res.ensureStarted = ensureStarted
-	return res
+// OnError will get called in case of an error
+func OnError(onError func(error)) Option {
+	return func(sc supervisorConf) supervisorConf {
+		sc.onError = onError
+		return sc
+	}
 }
 
-func (sp *Supervisor) defaultRetry(e interface{}, intensity int, fn func() error, dt time.Duration) {
-	// log.Println("error:", e)
-	time.Sleep(dt)
-	go sp.sup(intensity, dt, fn, sp.defaultRetry)
-}
+//-----------------------------------------------------------------------------
 
-func (sp *Supervisor) sup(
-	intensity int,
-	period time.Duration,
-	fn func() error,
-	retry func(interface{}, int, func() error, time.Duration)) {
-	select {
-	case <-sp.exectx.Ctx.Done():
-		return
-	default:
+// Supervise a helper method, runs in sync, use as "go Supervise(...)",
+// takes care of restarts (in case of panic or error),
+// can be used as a SimpleOneForOne supervisor, an intensity < 0 means restart forever.
+// It is sync because in most cases we do not need to escape the scope of current
+// goroutine.
+func Supervise(
+	action func() error,
+	options ...Option) {
+	var sc supervisorConf
+	for _, opt := range options {
+		sc = opt(sc)
 	}
-	if intensity == 0 {
-		return
+	if sc.intensity == 0 {
+		sc.intensity = 1
 	}
-	if intensity > 0 {
-		intensity--
+	if sc.period == 0 {
+		sc.period = time.Second * 5
 	}
-	dt := time.Second
-	if period > 0 {
-		dt = period
+
+	intensity := sc.intensity
+	period := sc.period
+	onError := sc.onError
+
+	if intensity != 1 && period <= 0 {
+		period = time.Second * 5
 	}
-	if retry == nil {
-		retry = sp.defaultRetry
-	}
-	internalRetry := func(e1 interface{}) {
-		retry(e1, intensity, fn, dt)
-	}
-	utl := goroutines.New()
-	if sp.ensureStarted {
-		utl = utl.EnsureStarted()
-	}
-	utl.AddToGroup(sp.exectx.WG).
-		Recover(func(e interface{}) {
-			internalRetry(e)
-		}).
-		Go(func() {
-			if err := fn(); err != nil {
-				internalRetry(err)
+
+	for intensity != 0 {
+		if intensity > 0 {
+			intensity--
+		}
+		if err := run(action); err != nil {
+			if onError != nil {
+				onError(err)
 			}
-		})
-}
-
-// Simple141 provides simple one for one supervision. period must be
-// greater than zero to take effect. An intensity of -1 means run forever.
-func (sp *Supervisor) Simple141(
-	intensity int,
-	period time.Duration,
-	fn func() error) {
-	retry := func(e1 interface{}, intensity1 int, fn1 func() error, dt1 time.Duration) {
-		// log.Println("error:", e)
-		time.Sleep(dt1)
-		go sp.Simple141(intensity1, dt1, fn1)
-	}
-	sp.sup(intensity, period, fn, retry)
-}
-
-func (sp *Supervisor) one4All(fn ...func(context.Context) error) (ferr error) {
-	all := len(fn)
-	if all == 0 {
-		return nil
-	}
-
-	subCtx, subCancel := context.WithCancel(sp.exectx.Ctx)
-	defer subCancel()
-
-	seterr := make(chan error, all)
-	for _, v := range fn {
-		v := v
-		sp.Simple141(1, time.Millisecond, func() (cerr error) {
-			defer func() {
-				seterr <- cerr
-				if cerr != nil {
-					subCancel()
-				}
-			}()
-			cerr = v(subCtx)
-			return
-		})
-	}
-
-	cnt := 0
-	for {
-		_err := <-seterr
-		if _err != nil {
-			ferr = _err
-		}
-		cnt++
-		if cnt == len(fn) {
+			if intensity != 0 {
+				time.Sleep(period)
+			}
+		} else {
 			break
 		}
 	}
-
-	return
 }
 
-// One4All if one of goroutines stops, all other will get the signal to stop too.
-func (sp *Supervisor) One4All(
-	intensity int,
-	period time.Duration,
-	fn ...func(context.Context) error) {
-	sp.Simple141(intensity, period, func() error {
-		return sp.one4All(fn...)
-	})
-}
-
-func (sp *Supervisor) rest4One(fn ...func(context.Context) error) (ferr error) {
-	all := len(fn)
-	if all == 0 {
-		return nil
-	}
-
-	rootCtx, rootCancel := context.WithCancel(sp.exectx.Ctx)
-	defer rootCancel()
-
-	seterr := make(chan error, all)
-	var _subCtx = rootCtx
-	for _, v := range fn {
-		subCtx, subCancel := context.WithCancel(_subCtx)
-		v := v
-		sp.Simple141(1, time.Millisecond, func() (cerr error) {
-			defer func() {
-				seterr <- cerr
-				if cerr != nil {
-					subCancel()
-				}
-			}()
-			cerr = v(subCtx)
-			return
-		})
-		_subCtx = subCtx
-	}
-
-	cnt := 0
-	for {
-		_err := <-seterr
-		if _err != nil {
-			ferr = _err
+// run calls the function, does captures panics
+func run(action func() error) (errrun error) {
+	defer func() {
+		if e := recover(); e != nil {
+			if err, ok := e.(error); ok {
+				errrun = err
+				return
+			}
+			errrun = errors.Errorf("UNKNOWN: %v", e)
 		}
-		cnt++
-		if cnt == len(fn) {
-			break
-		}
-	}
-
-	return
+	}()
+	return action()
 }
 
-// Rest4One rest for one
-func (sp *Supervisor) Rest4One(
-	intensity int,
-	period time.Duration,
-	fn ...func(context.Context) error) {
-	sp.Simple141(intensity, period, func() error {
-		return sp.rest4One(fn...)
-	})
-}
+//-----------------------------------------------------------------------------
