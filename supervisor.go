@@ -4,7 +4,7 @@ package supervisor
 import (
 	"time"
 
-	"github.com/dc0d/club/errors"
+	"github.com/pkg/errors"
 )
 
 //-----------------------------------------------------------------------------
@@ -96,7 +96,7 @@ func run(action func() error) (errrun error) {
 				errrun = err
 				return
 			}
-			errrun = errors.Errorf("UNKNOWN: %v", e)
+			errrun = errors.Errorf("UNKNOWN: %+v", e)
 		}
 	}()
 	return action()
