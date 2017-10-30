@@ -1,4 +1,6 @@
-// Package supervisor provides supervision utilities
+// Package supervisor provides supervision utilities for running a function,
+// and retry it if there is an error or panic, for a certain number of times (or infinitely),
+// periodically, at the specified periods.
 package supervisor
 
 import (
@@ -44,7 +46,7 @@ func OnError(onError func(error)) Option {
 
 //-----------------------------------------------------------------------------
 
-// Supervise a helper method, runs in sync, use as "go Supervise(...)",
+// Supervise a helper method, runs in sync, use as "go Supervise(...)" if should run concurrently,
 // takes care of restarts (in case of panic or error),
 // can be used as a SimpleOneForOne supervisor, an intensity < 0 means restart forever.
 // It is sync because in most cases we do not need to escape the scope of current

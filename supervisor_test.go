@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,4 +85,43 @@ func TestOnError3(t *testing.T) {
 		OnError(func(error) { cancel() }))
 	<-ctx.Done()
 	assert.Equal(t, int64(1), sum)
+}
+
+func ExampleSupervise() {
+	// if should run concurrently then use "go Supervise(...)"
+	Supervise(func() error {
+		fmt.Println("done")
+		return nil
+	})
+
+	// Output:
+	// done
+}
+
+func ExampleIntensity() {
+	Supervise(func() error {
+		fmt.Println(1)
+		return errors.Errorf("FAILED")
+	},
+		Intensity(3),
+		Period(time.Millisecond*50))
+
+	// Output:
+	// 1
+	// 1
+	// 1
+}
+
+func ExampleOnError() {
+	Supervise(func() error {
+		return errors.Errorf("FAILED")
+	},
+		Intensity(3),
+		Period(time.Millisecond*50),
+		OnError(func(err error) { fmt.Println(err) }))
+
+	// Output:
+	// FAILED
+	// FAILED
+	// FAILED
 }
