@@ -112,7 +112,7 @@ func ExampleIntensity() {
 	// 1
 }
 
-func ExampleOnError() {
+func ExampleOnError_error() {
 	Supervise(func() error {
 		return errors.Errorf("FAILED")
 	},
@@ -124,4 +124,33 @@ func ExampleOnError() {
 	// FAILED
 	// FAILED
 	// FAILED
+}
+
+func ExampleOnError_panic() {
+	Supervise(func() error {
+		panic(errors.Errorf("FAILED"))
+	},
+		Intensity(3),
+		Period(time.Millisecond*50),
+		OnError(func(err error) { fmt.Println(err) }))
+
+	// Output:
+	// FAILED
+	// FAILED
+	// FAILED
+}
+
+func ExamplePeriod() {
+	startedAt := time.Now()
+	Supervise(func() error {
+		return errors.Errorf("FAILED")
+	},
+		Intensity(3),
+		Period(time.Millisecond*50),
+		OnError(func(err error) { fmt.Println(time.Since(startedAt).Round(time.Millisecond)) }))
+
+	// Output:
+	// 0s
+	// 50ms
+	// 100ms
 }
