@@ -147,7 +147,7 @@ func ExamplePeriod() {
 	},
 		Intensity(3),
 		Period(time.Millisecond*50),
-		OnError(func(err error) { fmt.Println(time.Since(startedAt).Round(time.Millisecond)) }))
+		OnError(func(err error) { fmt.Println(time.Since(startedAt).Round(time.Millisecond * 5)) }))
 
 	// Output:
 	// 0s

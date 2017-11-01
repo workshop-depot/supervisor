@@ -17,6 +17,8 @@ type supervisorConf struct {
 	onError   func(error)
 }
 
+//-----------------------------------------------------------------------------
+
 // Option represents a supervision option
 type Option func(supervisorConf) supervisorConf
 
@@ -54,24 +56,7 @@ func OnError(onError func(error)) Option {
 func Supervise(
 	action func() error,
 	options ...Option) {
-	var sc supervisorConf
-	for _, opt := range options {
-		sc = opt(sc)
-	}
-	if sc.intensity == 0 {
-		sc.intensity = 1
-	}
-	if sc.period == 0 {
-		sc.period = time.Second * 5
-	}
-
-	intensity := sc.intensity
-	period := sc.period
-	onError := sc.onError
-
-	if intensity != 1 && period <= 0 {
-		period = time.Second * 5
-	}
+	intensity, period, onError := validateAndRefine(options...)
 
 	for intensity != 0 {
 		if intensity > 0 {
@@ -91,17 +76,33 @@ func Supervise(
 }
 
 // run calls the function, does captures panics
-func run(action func() error) (errrun error) {
+func run(action func() error) (errRun error) {
 	defer func() {
 		if e := recover(); e != nil {
 			if err, ok := e.(error); ok {
-				errrun = err
+				errRun = err
 				return
 			}
-			errrun = errors.Errorf("UNKNOWN: %+v", e)
+			errRun = errors.Errorf("UNKNOWN: %+v", e)
 		}
 	}()
 	return action()
+}
+
+func validateAndRefine(options ...Option) (int, time.Duration, func(error)) {
+	var sc supervisorConf
+	for _, opt := range options {
+		sc = opt(sc)
+	}
+	if sc.intensity == 0 {
+		sc.intensity = 1
+	}
+	if sc.intensity != 1 && sc.period <= 0 {
+		sc.period = time.Second * 5
+	}
+	return sc.intensity,
+		sc.period,
+		sc.onError
 }
 
 //-----------------------------------------------------------------------------
