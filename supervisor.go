@@ -4,6 +4,7 @@
 package supervisor
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/pkg/errors"
@@ -103,6 +104,12 @@ func validateAndRefine(options ...Option) (int, time.Duration, func(error)) {
 	return sc.intensity,
 		sc.period,
 		sc.onError
+}
+
+//-----------------------------------------------------------------------------
+
+func init() {
+	fmt.Println("warning: use package github.com/dc0d/retry instead.")
 }
 
 //-----------------------------------------------------------------------------
